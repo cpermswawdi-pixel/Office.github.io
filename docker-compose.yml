@@ -1,0 +1,134 @@
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: wms
+      MYSQL_USER: wms_app
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env.production}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env.production}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./deployment/mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - database
+
+  migrate:
+    build:
+      context: .
+      dockerfile: deployment/backend.Dockerfile
+    restart: "no"
+    environment:
+      DATABASE_URL: mysql://wms_app:${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env.production}@mysql:3306/wms
+      SHADOW_DATABASE_URL: mysql://wms_app:${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env.production}@mysql:3306/wms_shadow
+    command: ["npm", "run", "prisma:migrate:deploy"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - database
+
+  seed:
+    build:
+      context: .
+      dockerfile: deployment/backend.Dockerfile
+    restart: "no"
+    environment:
+      DATABASE_URL: mysql://wms_app:${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env.production}@mysql:3306/wms
+      SHADOW_DATABASE_URL: mysql://wms_app:${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env.production}@mysql:3306/wms_shadow
+      SUPER_ADMIN_NAME: ${SUPER_ADMIN_NAME:-Warehouse Administrator}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:?Set SUPER_ADMIN_EMAIL in .env.production}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:?Set SUPER_ADMIN_PASSWORD in .env.production}
+    command: ["npm", "run", "prisma:seed:deploy"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - database
+
+  backend:
+    build:
+      context: .
+      dockerfile: deployment/backend.Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      TRUST_PROXY: "1"
+      PORT: 4000
+      DATABASE_URL: mysql://wms_app:${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env.production}@mysql:3306/wms
+      SHADOW_DATABASE_URL: mysql://wms_app:${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env.production}@mysql:3306/wms_shadow
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.production}
+      JWT_EXPIRES_IN: 8h
+      CORS_ORIGIN: https://${DOMAIN:?Set DOMAIN in .env.production}
+      PDF_FONT_PATH: /usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf
+    volumes:
+      - uploads_data:/app/backend/uploads
+    expose:
+      - "4000"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - edge
+      - database
+
+  frontend:
+    build:
+      context: .
+      dockerfile: deployment/frontend.Dockerfile
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - edge
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deployment/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    networks:
+      - edge
+
+volumes:
+  mysql_data:
+  uploads_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+  database:
+    internal: true

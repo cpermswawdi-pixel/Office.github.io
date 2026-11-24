@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+!.env.production.example
+.mysql-admin
+node_modules/
+**/node_modules/
+frontend/dist/
+backend/uploads/*
+!backend/uploads/.gitkeep
+coverage/
+*.log
